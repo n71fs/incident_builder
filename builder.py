@@ -21,8 +21,10 @@ parser.add_argument('OutFile', help='Filename of the output Audacity project fil
 parser.add_argument('--splitwav', dest='splitwav', action='store_true', help='When set, split WAV files into multiple segments in the Audacity track based on the logged JSON data. Results in more accurate timing of reconstructed audio.  Default is set.')
 parser.add_argument('--no-splitwav',dest='splitwav', action='store_false', help='When set, a single segment is created in Audacity per WAV file.  Default is to use --splitwav')
 parser.add_argument('--TGID_CSV', help='CSV file containing TGID names in trunk-recorder format')
+parser.add_argument('--no-json', dest='use_json', action='store_false', help='When set, build tracks from WAV files without JSON metadata and place transmissions back-to-back.')
 parser.set_defaults(splitwav=True)
 parser.set_defaults(TGID_CSV='')
+parser.set_defaults(use_json=True)
 
 args = parser.parse_args()
 rpath = args.Path
@@ -36,6 +38,7 @@ TGIDS = args.TGIDS.split(',')
 outfile = args.OutFile
 splitwav = args.splitwav
 TGID_CSV = args.TGID_CSV
+use_json = args.use_json
 
 #Argument validation#############
 #confirm that audio path exists
@@ -88,20 +91,31 @@ if TGID_CSV != '':
 fnames = []
 min_timestamp = 2**64
 for fname in os.listdir(rfilepath):
-	if fname.endswith(".json"):
+	if fname.endswith(".json") and use_json:
 		timestamp = int(fname[fname.find("-")+1:fname.find("_")])
-		#print(timestamp)
 		TGID = fname[0:fname.find("-")]
-		#print(TGID)
 		if TGID in TGIDS and timestamp > start_timestamp and timestamp < stop_timestamp:
 			fnames.append(fname)
 			if timestamp < min_timestamp:
 				min_timestamp = timestamp
-fnames.sort()
-print(start_timestamp)
-print(stop_timestamp)
-print(min_timestamp)
-print(TGIDS)
+
+if use_json:
+	if len(fnames) == 0:
+		print("Error - No JSON recordings found for date/time range (use --no-json to build from WAV files)")
+		sys.exit()
+	fnames.sort()
+	print(start_timestamp)
+	print(stop_timestamp)
+	print(min_timestamp)
+	print(TGIDS)
+else:
+	for fname in os.listdir(rfilepath):
+		if fname.endswith(".wav"):
+			timestamp = int(fname[fname.find("-")+1:fname.find("_")])
+			TGID = fname[0:fname.find("-")]
+			if TGID in TGIDS and timestamp > start_timestamp and timestamp < stop_timestamp:
+				fnames.append(fname)
+	fnames.sort()
 # create the AUP XML file structure
 data = ET.Element('project')
 data.set('xmlns','http://audacity.sourceforge.net/xml')
@@ -126,50 +140,70 @@ for TGID in TGIDS:
 	wavetrack.set('rate','8000')
 	wavetrack.set('gain','1')
 	wavetrack.set('pan','0')
+	back_to_back_offset = 0
 	#CREATE A NEW WAVCLIP FOR EACH TRANSMISSION IN THE TGID(MAY BE MORE THAN ONE TRANSMISSION PER WAV - BASED ON JSON)
 	for fname in fnames:
 		timestamp = int(fname[fname.find("-")+1:fname.find("_")])
 		if fname[0:fname.find("-")] == TGID:
-			wavefilename = rfilepath + "/" + fname.replace('json','wav')
-			print(wavefilename)
-			with open(rfilepath + "/" + fname) as json_file:
-					jdata = json.load(json_file)
-			if args.splitwav == True and len(jdata['srcList']) > 1:
-				i = 0
-				#CREATE A FOR LOOP WITH THE NUMBER OF SEGMENTS IN THE WAV, INCREMENT .AU FILENAME EACH TIME
-				srcList = jdata['srcList']
-				for n, src in enumerate(srcList):
-					pos = float(src['pos'])
-					timestamp = int(src['time'])
-					aufilename = fname.replace('.json','') + str(i) + '.au'
-					i = i + 1
-					if n == len(srcList)-1:
-						nsamples, srate = convert_wav_to_au(wavefilename,datadir + '/' + aufilename,pos,None)
-					else:
-						nsamples, srate = convert_wav_to_au(wavefilename,datadir + '/' + aufilename,pos,float(srcList[n+1]['pos'])-pos)
-					if nsamples <=0:
-						os.remove(datadir + '/' +aufilename)
-					else:
-						waveclip = ET.SubElement(wavetrack, 'waveclip')
-						offset = timestamp - min_timestamp
-						waveclip.set('offset',str(offset))
-						envelope = ET.SubElement(waveclip,'envelope')
-						envelope.set('numpoints','0')
-						sequence = ET.SubElement(waveclip,'sequence')
-						sequence.set('maxsamples',str(nsamples))
-						sequence.set('sampleformat','262159')
-						sequence.set('numsamples',str(nsamples))
-						waveblock = ET.SubElement(sequence,'waveblock')
-						waveblock.set('start','0')
-						simpleblockfile = ET.SubElement(waveblock,'simpleblockfile')
-						simpleblockfile.set('filename',aufilename)
-						simpleblockfile.set('len',str(nsamples))
+			if use_json:
+				wavefilename = rfilepath + "/" + fname.replace('json','wav')
+				print(wavefilename)
+				with open(rfilepath + "/" + fname) as json_file:
+						jdata = json.load(json_file)
+				if args.splitwav == True and len(jdata['srcList']) > 1:
+					i = 0
+					#CREATE A FOR LOOP WITH THE NUMBER OF SEGMENTS IN THE WAV, INCREMENT .AU FILENAME EACH TIME
+					srcList = jdata['srcList']
+					for n, src in enumerate(srcList):
+						pos = float(src['pos'])
+						timestamp = int(src['time'])
+						aufilename = fname.replace('.json','') + str(i) + '.au'
+						i = i + 1
+						if n == len(srcList)-1:
+							nsamples, srate = convert_wav_to_au(wavefilename,datadir + '/' + aufilename,pos,None)
+						else:
+							nsamples, srate = convert_wav_to_au(wavefilename,datadir + '/' + aufilename,pos,float(srcList[n+1]['pos'])-pos)
+						if nsamples <=0:
+							os.remove(datadir + '/' +aufilename)
+						else:
+							waveclip = ET.SubElement(wavetrack, 'waveclip')
+							offset = timestamp - min_timestamp
+							waveclip.set('offset',str(offset))
+							envelope = ET.SubElement(waveclip,'envelope')
+							envelope.set('numpoints','0')
+							sequence = ET.SubElement(waveclip,'sequence')
+							sequence.set('maxsamples',str(nsamples))
+							sequence.set('sampleformat','262159')
+							sequence.set('numsamples',str(nsamples))
+							waveblock = ET.SubElement(sequence,'waveblock')
+							waveblock.set('start','0')
+							simpleblockfile = ET.SubElement(waveblock,'simpleblockfile')
+							simpleblockfile.set('filename',aufilename)
+							simpleblockfile.set('len',str(nsamples))
+				else:
+					aufilename = fname.replace('.json','') + '.au'
+					nsamples, srate = convert_wav_to_au(wavefilename,datadir + '/' + aufilename,0,None)
+					waveclip = ET.SubElement(wavetrack, 'waveclip')
+					offset = timestamp - min_timestamp
+					waveclip.set('offset',str(offset))
+					envelope = ET.SubElement(waveclip,'envelope')
+					envelope.set('numpoints','0')
+					sequence = ET.SubElement(waveclip,'sequence')
+					sequence.set('maxsamples',str(nsamples))
+					sequence.set('sampleformat','262159')
+					sequence.set('numsamples',str(nsamples))
+					waveblock = ET.SubElement(sequence,'waveblock')
+					waveblock.set('start','0')
+					simpleblockfile = ET.SubElement(waveblock,'simpleblockfile')
+					simpleblockfile.set('filename',aufilename)
+					simpleblockfile.set('len',str(nsamples))
 			else:
-				aufilename = fname.replace('.json','') + '.au'
+				wavefilename = rfilepath + "/" + fname
+				aufilename = fname.replace('.wav','') + '.au'
 				nsamples, srate = convert_wav_to_au(wavefilename,datadir + '/' + aufilename,0,None)
 				waveclip = ET.SubElement(wavetrack, 'waveclip')
-				offset = timestamp - min_timestamp
-				waveclip.set('offset',str(offset))
+				waveclip.set('offset',str(back_to_back_offset))
+				back_to_back_offset = back_to_back_offset + (nsamples / float(srate))
 				envelope = ET.SubElement(waveclip,'envelope')
 				envelope.set('numpoints','0')
 				sequence = ET.SubElement(waveclip,'sequence')
