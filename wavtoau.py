@@ -31,6 +31,7 @@ def convert_wav_to_au(wavefilein,aufileout,start_sec=0,duration_sec=None):
 	srate = wav.getframerate()
 	sampwidth = wav.getsampwidth()
 	nframes = wav.getnframes()
+	channels = wav.getnchannels()
 
 	#print("Sampling Rate = " + str(srate))
 	#print("Sampling Width = " + str(sampwidth))
@@ -55,27 +56,29 @@ def convert_wav_to_au(wavefilein,aufileout,start_sec=0,duration_sec=None):
 	max256s = []
 	rms256s = []
 	frames_read = 0
-	for k in range(0,(totalframes+255)/256):  #read 256 frames at a time to help create summary data while reading frames
+	for k in range(0,(totalframes+255)//256):  #read 256 frames at a time to help create summary data while reading frames
 		frames_to_read = min(256,totalframes-frames_read)  #read less than 256 frames if we're at the end of the file
+		sample_count = frames_to_read * channels
 		frame = wav.readframes(frames_to_read)
 		if sampwidth == 1:
-			frame = list(struct.unpack('<' + 'b'*frames_to_read,frame))
+			frame = list(struct.unpack('<' + 'b'*sample_count,frame))
 		if sampwidth == 2:
-			frame = list(struct.unpack('<' + 'h'*frames_to_read,frame))
+			frame = list(struct.unpack('<' + 'h'*sample_count,frame))
 		if sampwidth == 4:
-			frame = list(struct.unpack('<' + 'i'*frames_to_read,frame))
+			frame = list(struct.unpack('<' + 'i'*sample_count,frame))
 		frames_read = frames_read + frames_to_read  #increment the number of audio frames that we've read so far
 		audioframes = audioframes + frame  #add the audio we just read to our list
 		min256 = min(frame)    #for summary256 data
 		min256s.append(min256) #save to create summary64k data
 		max256 = max(frame)    #for summary256 data
-		max256s.append(min256) #save to create summary64k data
+		max256s.append(max256) #save to create summary64k data
 		rms256 = math.sqrt(sum([i**2 for i in frame]))    #for summary256 data
 		rms256s.append(rms256) #save to create summary64k data
 		summary256.append(min256)
 		summary256.append(max256)
 		summary256.append(rms256)
-		if counter64k == 255:  #create new entry for summary64k data
+		counter64k += 1
+		if counter64k == 256:  #create new entry for summary64k data
 			summary64k.append(min(min256s))
 			summary64k.append(max(max256s))
 			summary64k.append(math.sqrt(sum([i**2 for i in rms256s])))
@@ -84,13 +87,13 @@ def convert_wav_to_au(wavefilein,aufileout,start_sec=0,duration_sec=None):
 			rms256s = []
 			counter64k = 0
 
-	au.write("dns.")  #backwards '.snd' from .au file format to specify little-endian
+	au.write(b"dns.")  #backwards '.snd' from .au file format to specify little-endian
 	au.write(struct.pack('<I',0x2C+len(summary256)*4+len(summary64k)*4))  #Data Offset in bytes
 	au.write(struct.pack('<I',0xFFFFFFFF))  #Data Size
 	au.write(struct.pack('<I',0x06))  #Data encoding format.  6=32 bit IEEE floating point
 	au.write(struct.pack('<I',srate))  #sampling rate
 	au.write(struct.pack('<I',1))  #number of interleaved audio channels
-	au.write("AudacityBlockFile112")  #Audacity-specific string
+	au.write(b"AudacityBlockFile112")  #Audacity-specific string
 
 	#write summary256 data (annotation field)
 	for sframe in summary256:
